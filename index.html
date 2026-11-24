@@ -323,24 +323,86 @@ async function loadCalendar() {
     if (part.value !== "2" && part.value !== "3") continue;
     for (const e of part.entries) {
       if (e.value === "999") continue; // the CFP is already inside "Bowls"
+      if (part.value === "3") { weeks.push(...bowlWeeks(e, year)); continue; }
       weeks.push({
-        label: part.value === "3" ? "Bowls & Playoff" : e.label, detail: e.detail,
+        label: e.label, detail: e.detail,
         seasontype: part.value, week: e.value, year,
         start: new Date(e.startDate), end: new Date(e.endDate),
       });
     }
   }
+  // Leave out bowl weeks with no games (the gaps between bowls and playoff rounds).
+  try {
+    const post = await loadPostseason(year);
+    const used = new Set(post.map((e) => bowlWeekOf(new Date(e.date))));
+    weeks = weeks.filter((w) => w.seasontype !== "3" || used.has(w));
+  } catch { /* keep every week; each one loads on its own */ }
   const now = new Date();
-  weekIdx = weeks.findIndex((w) => now >= w.start && now < w.end);
-  if (weekIdx < 0) weekIdx = now < weeks[0].start ? 0 : weeks.length - 1;
+  // The week we're in, or the latest one already started (between bowl weeks, say).
+  weekIdx = Math.max(0, weeks.findLastIndex((w) => w.start <= now));
+}
+
+// ESPN lists the whole postseason as one "week" running into late January. Split it
+// into Monday-to-Monday weeks like the regular season, so each week stays short.
+const DAY = 24 * 60 * 60 * 1000;
+function rangeLabel(from, until) {
+  const a = fmtShort(from), z = fmtShort(new Date(until - 1));
+  return a.split(" ")[0] === z.split(" ")[0] ? `${a}-${z.split(" ")[1]}` : `${a}-${z}`;
+}
+function bowlWeeks(e, year) {
+  let start = new Date(e.startDate);
+  const end = new Date(e.endDate);
+  const cuts = [];
+  const to = new Date(start);
+  to.setUTCHours(7, 0, 0, 0); // regular-season weeks also turn over Monday 07:00 UTC
+  for (;;) {
+    do to.setUTCDate(to.getUTCDate() + 1); while (to.getUTCDay() !== 1);
+    if (to >= end) break;
+    cuts.push(new Date(to));
+  }
+  // A stub of a day or two before the first Monday (the Sunday after the last regular
+  // week) goes back to that regular week, so no week holds two NFL Sundays.
+  const prev = weeks[weeks.length - 1];
+  if (cuts.length && cuts[0] - start < 3 * DAY && prev && prev.seasontype === "2") {
+    prev.end = cuts[0];
+    prev.detail = rangeLabel(prev.start, prev.end);
+    start = cuts.shift();
+  }
+  const bounds = [start, ...cuts, end];
+  return bounds.slice(0, -1).map((from, i) => ({
+    label: "Bowls", seasontype: "3", week: e.value, year,
+    start: from, end: bounds[i + 1], detail: rangeLabel(from, bounds[i + 1]),
+  }));
+}
+
+// Which bowl week a game belongs to. Anything ESPN dates outside the bowl window
+// goes into the first or last week.
+function bowlWeekOf(date) {
+  const bowls = weeks.filter((w) => w.seasontype === "3");
+  return bowls.find((w) => date < w.end) || bowls[bowls.length - 1];
+}
+
+const postseasonCache = new Map();
+function loadPostseason(year) {
+  if (!postseasonCache.has(year)) {
+    postseasonCache.set(year, getJSON(`${API}/college-football/scoreboard?groups=80&seasontype=3&week=1&dates=${year}&limit=400`)
+      .then((d) => d.events || [], (err) => { postseasonCache.delete(year); throw err; }));
+  }
+  return postseasonCache.get(year);
+}
+
+async function loadCollege(w) {
+  if (w.seasontype !== "3") {
+    const d = await getJSON(`${API}/college-football/scoreboard?groups=80&seasontype=${w.seasontype}&week=${w.week}&limit=400`);
+    return d.events || [];
+  }
+  const all = await loadPostseason(w.year);
+  return all.filter((e) => bowlWeekOf(new Date(e.date)) === w);
 }
 
 async function loadWeek(w) {
-  const [cfb, lions] = await Promise.all([
-    getJSON(`${API}/college-football/scoreboard?groups=80&seasontype=${w.seasontype}&week=${w.week}&limit=400`),
-    loadLions(w),
-  ]);
-  const college = (cfb.events || []).map((e) => fromScoreboard(e, "college-football"));
+  const [events, lions] = await Promise.all([loadCollege(w), loadLions(w)]);
+  const college = events.map((e) => fromScoreboard(e, "college-football"));
   const games = [...lions, ...college].filter((g) => directvChannels(g.channels).length > 0);
   // Touchdown and upset info come from each finished game's summary; sorting needs them first.
   await Promise.all(games.filter((g) => g.completed).map((g) =>
