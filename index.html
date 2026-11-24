@@ -177,10 +177,17 @@ h2.lions { color: var(--lions); border-color: var(--lions); }
 
 .empty { color: var(--muted); background: var(--surface); border: 2px dashed var(--line); border-radius: var(--radius); padding: 20px; }
 footer { color: var(--muted); font-size: 0.9rem; max-width: 60ch; }
-@media (prefers-reduced-motion: no-preference) {
-  .game { animation: rise 0.2s ease-out both; }
-  @keyframes rise { from { transform: translateY(4px); } to { transform: none; } }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: min(560px, calc(100% - 32px));
+  display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 18px;
+  background: var(--ink); color: var(--bg); border-radius: 14px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.3); z-index: 10;
 }
+.toast span { flex: 1; min-width: 0; line-height: 1.3; }
+.toast button { background: var(--bg); color: var(--ink); border-color: var(--bg); min-height: 48px; flex: none; }
+body { padding-bottom: 110px; }
 </style>
 </head>
 <body>
@@ -205,6 +212,7 @@ footer { color: var(--muted); font-size: 0.9rem; max-width: 60ch; }
   <div id="status" class="status" role="status">Loading games…</div>
   <main id="games"></main>
   <button id="restore" class="restore" type="button" hidden></button>
+  <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button id="undo" type="button">Undo</button></div>
 
   <footer>
     Scores come from ESPN. "Points" is both teams' points added together, rounded down to the nearest 10. Quarters without a touchdown count only the four regular quarters.
@@ -248,6 +256,17 @@ function setMark(g, value) {
   render();
 }
 
+// A short message along the bottom with an Undo button, for taps that hide something.
+let toastTimer = 0;
+function showToast(text, undo) {
+  clearTimeout(toastTimer);
+  $("toastText").textContent = text;
+  $("toast").hidden = false;
+  $("undo").onclick = () => { hideToast(); undo(); };
+  toastTimer = setTimeout(hideToast, 8000);
+}
+function hideToast() { clearTimeout(toastTimer); $("toast").hidden = true; }
+
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -275,12 +294,18 @@ async function getJSON(url, tries = 2) {
 }
 
 // A busy week has 60+ finished games; ask ESPN for a few summaries at a time.
-let summarySlots = 6;
+const MAX_SUMMARIES = 6;
+let summaryActive = 0;
 const summaryQueue = [];
 async function limited(fn) {
-  if (summarySlots === 0) await new Promise((res) => summaryQueue.push(res));
-  summarySlots--;
-  try { return await fn(); } finally { summarySlots++; summaryQueue.shift()?.(); }
+  // A finished request hands its slot straight to the next one in line, so the
+  // count can't drift when requests start and finish at the same moment.
+  if (summaryActive >= MAX_SUMMARIES) await new Promise((res) => summaryQueue.push(res));
+  else summaryActive++;
+  try { return await fn(); } finally {
+    const next = summaryQueue.shift();
+    if (next) next(); else summaryActive--;
+  }
 }
 
 function fmtDay(d) { return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }); }
@@ -289,6 +314,25 @@ function fmtShort(d) { return d.toLocaleDateString(undefined, { month: "short", 
 
 function directvChannels(names) {
   return names.filter((n) => DIRECTV.has(String(n).trim().toUpperCase()));
+}
+
+// How each channel reads on the card, with its DIRECTV number. Local stations
+// (ABC, CBS, NBC, FOX, CW) differ by market, so they get no number.
+const CHANNEL_LABELS = {
+  "FOX": "FOX", "THE CW": "CW",
+  "ESPN": "ESPN 206", "ESPNEWS": "ESPNews 207", "ESPNU": "ESPNU 208", "ESPN2": "ESPN2 209",
+  "NFL NETWORK": "NFL Network 212", "NFL NET": "NFL Network 212", "NFLN": "NFL Network 212",
+  "FS1": "FS1 219", "FS2": "FS2 618",
+  "CBSSN": "CBS Sports 221", "CBS SPORTS NETWORK": "CBS Sports 221",
+  "USA NET": "USA 242", "USA NETWORK": "USA 242", "USA": "USA 242",
+  "TNT": "TNT 245", "TRUTV": "truTV 246", "TBS": "TBS 247",
+  "BTN": "Big Ten Network 610", "BIG TEN NETWORK": "Big Ten Network 610",
+  "SEC NETWORK": "SEC Network 611", "SECN": "SEC Network 611",
+  "ACC NETWORK": "ACC Network 612", "ACCN": "ACC Network 612",
+};
+function channelLabel(g) {
+  const labels = directvChannels(g.channels).map((n) => CHANNEL_LABELS[String(n).trim().toUpperCase()] || n);
+  return [...new Set(labels)].join(" / ") || "Channel TBA";
 }
 
 // ---------- normalize ESPN events into one shape ----------
@@ -445,7 +489,7 @@ async function loadCollege(w) {
   return all.filter((e) => bowlWeekOf(new Date(e.date)) === w);
 }
 
-async function loadWeek(w) {
+async function loadWeek(w, onProgress) {
   // If only the Lions schedule fails, show the college games and say so.
   let lionsFailed = false;
   const [events, lions] = await Promise.all([
@@ -458,8 +502,11 @@ async function loadWeek(w) {
   const games = [...lions, ...college].filter((g) =>
     directvChannels(g.channels).length > 0 || (g.state === "pre" && g.channels.length === 0));
   // Touchdown and upset info come from each finished game's summary; sorting needs them first.
-  await Promise.all(games.filter((g) => g.completed).map((g) =>
-    gameDetails(g).then((d) => { g.details = d; }, () => { g.details = null; })));
+  const finished = games.filter((g) => g.completed);
+  let done = 0;
+  await Promise.all(finished.map((g) =>
+    gameDetails(g).then((d) => { g.details = d; }, () => { g.details = null; })
+      .finally(() => onProgress?.(++done, finished.length))));
   games.lionsFailed = lionsFailed;
   return games;
 }
@@ -552,7 +599,7 @@ function teamRow(t, showWin) {
 }
 
 function card(g) {
-  const ch = directvChannels(g.channels).join(" / ") || "Channel TBA";
+  const ch = channelLabel(g);
   const [away, home] = g.teams;
   const showWin = g.completed;
   const seen = marks[markKey(g)] === "w";
@@ -603,7 +650,11 @@ function card(g) {
     "aria-label": `${seen ? "Unmark" : "Mark"} ${teamsText} as watched` }, seen ? "\u2713 Watched" : "Mark watched");
   watchBtn.addEventListener("click", () => setMark(g, seen ? null : "w"));
   const removeBtn = h("button", { type: "button", class: "remove", "aria-label": `Remove ${teamsText}` }, "Remove");
-  removeBtn.addEventListener("click", () => setMark(g, "r"));
+  removeBtn.addEventListener("click", () => {
+    const before = marks[markKey(g)] || null;
+    setMark(g, "r");
+    showToast(`Removed ${teamsText}.`, () => setMark(g, before));
+  });
   el.append(h("div", { class: "actions" }, watchBtn, removeBtn));
   return el;
 }
@@ -669,12 +720,15 @@ async function showWeek(i, { autoBack = false, quiet = false } = {}) {
   $("next").disabled = i >= weeks.length - 1;
   const token = ++loadToken;
   if (!quiet) {
+    hideToast();
     $("status").className = "status";
     $("status").textContent = "Loading games…";
     $("restore").hidden = true;
   }
   try {
-    const games = await loadWeek(weeks[i]);
+    const games = await loadWeek(weeks[i], quiet ? null : (n, total) => {
+      if (token === loadToken && total > 8) $("status").textContent = `Loading games… ${n} of ${total}`;
+    });
     if (token !== loadToken) return;
     // Early in a week nothing has finished yet, so open on last week instead.
     if (autoBack && i > 0 && !games.some((g) => g.completed)) return showWeek(i - 1);
