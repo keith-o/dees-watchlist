@@ -26,8 +26,8 @@
   --turf: #1f5e2e;
   --turf-ink: #ffffff;
   --lions: #005a8f;
-  --notd: #7a4300;
-  --notd-bg: #fbe3bb;
+  --gold: #7a4300;
+  --gold-bg: #fbe3bb;
   --chip: #e3e8df;
   --upset: #a01c2c;
   --upset-bg: #fbdfe2;
@@ -39,14 +39,14 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0e130f; --surface: #1a221c; --ink: #f2f6f0; --muted: #c3cec5; --line: #3a463d;
-    --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --notd: #ffc874; --notd-bg: #45320f; --chip: #29332c;
+    --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --gold: #ffc874; --gold-bg: #45320f; --chip: #29332c;
     --upset: #ff9aa5; --upset-bg: #4c1a22;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0e130f; --surface: #1a221c; --ink: #f2f6f0; --muted: #c3cec5; --line: #3a463d;
-  --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --notd: #ffc874; --notd-bg: #45320f; --chip: #29332c;
+  --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --gold: #ffc874; --gold-bg: #45320f; --chip: #29332c;
   --upset: #ff9aa5; --upset-bg: #4c1a22;
   color-scheme: dark;
 }
@@ -96,7 +96,7 @@ select { min-width: 0; font-weight: 700; text-overflow: ellipsis; }
 .toggle input { width: 22px; height: 22px; accent-color: var(--turf); margin: 0; flex: none; }
 
 .status { color: var(--muted); }
-.status.err { color: var(--notd); font-weight: 700; }
+.status.err { color: var(--gold); font-weight: 700; }
 .restore { min-height: 56px; width: 100%; color: var(--muted); border-style: dashed; }
 
 section { display: flex; flex-direction: column; gap: 14px; }
@@ -124,6 +124,11 @@ h2.lions { color: var(--lions); border-color: var(--lions); }
   background: var(--upset-bg); color: var(--upset); border: 2px solid var(--upset);
 }
 .upset.huge { background: var(--upset); color: var(--surface); }
+.event {
+  padding: 10px 18px 0; color: var(--gold);
+  font: 800 1.15rem/1.1 var(--display); text-transform: uppercase; letter-spacing: 0.04em;
+  text-wrap: balance;
+}
 .channel {
   color: var(--ink); background: var(--chip);
   padding: 3px 12px; border-radius: 8px; letter-spacing: 0.02em;
@@ -279,6 +284,7 @@ function fromScoreboard(ev, league) {
     id: ev.id, league, date: new Date(ev.date), channels,
     state: c.status.type.state, completed: c.status.type.completed,
     statusText: c.status.type.description,
+    event: eventName(c.notes?.[0]?.headline),
     teams: c.competitors
       .slice().sort((a, b) => (a.homeAway === "away" ? 0 : 1) - (b.homeAway === "away" ? 0 : 1))
       .map((t) => ({
@@ -291,6 +297,17 @@ function fromScoreboard(ev, league) {
         winner: t.winner === true,
       })),
   };
+}
+
+// Bowl and championship names, as ESPN writes them, tidied a little:
+// "College Football Playoff Quarterfinal at the Goodyear Cotton Bowl Classic"
+//   -> "Playoff Quarterfinal · Goodyear Cotton Bowl Classic".
+function eventName(headline) {
+  if (!headline) return "";
+  let n = headline.replace(/\s+presented by .*$/i, "").replace(/\s+game$/i, "").trim();
+  const cfp = n.match(/^College Football Playoff\s+(.*?)(?:\s+at the\s+(.*))?$/i);
+  if (cfp) n = cfp[2] ? `Playoff ${cfp[1]} \u00b7 ${cfp[2]}` : /championship/i.test(cfp[1]) ? cfp[1] : `Playoff ${cfp[1]}`;
+  return n;
 }
 
 function fromTeamSchedule(ev) {
@@ -493,6 +510,7 @@ function card(g) {
           : g.details?.upset === "upset" ? h("span", { class: "upset" }, "Upset") : null),
       h("span", null, g.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })),
     ),
+    g.event ? h("div", { class: "event" }, g.event) : null,
     h("div", { class: "teams" }, teamRow(away, showWin), h("div", { class: "at" }, "at"), teamRow(home, showWin)),
   );
 
