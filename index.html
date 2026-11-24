@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e130f" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dee&#39;s Watchlist">
+<title>Dee's Watchlist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+/* Layout: phone-first single column; week controls on top, then big readable game cards grouped by day, Lions first.
+   Sizes are set for older eyes: 19-20px body text, 56px touch targets, sentence-case labels, strong contrast. */
+:root {
+  --bg: #eef1ea;
+  --surface: #ffffff;
+  --ink: #101a13;
+  --muted: #3b473e;
+  --line: #c4cbbf;
+  --turf: #1f5e2e;
+  --turf-ink: #ffffff;
+  --lions: #005a8f;
+  --notd: #7a4300;
+  --notd-bg: #fbe3bb;
+  --chip: #e3e8df;
+  --upset: #a01c2c;
+  --upset-bg: #fbdfe2;
+  --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius: 16px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e130f; --surface: #1a221c; --ink: #f2f6f0; --muted: #c3cec5; --line: #3a463d;
+    --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --notd: #ffc874; --notd-bg: #45320f; --chip: #29332c;
+    --upset: #ff9aa5; --upset-bg: #4c1a22;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e130f; --surface: #1a221c; --ink: #f2f6f0; --muted: #c3cec5; --line: #3a463d;
+  --turf: #86d398; --turf-ink: #0e130f; --lions: #7cc4f0; --notd: #ffc874; --notd-bg: #45320f; --chip: #29332c;
+  --upset: #ff9aa5; --upset-bg: #4c1a22;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; font-size: 19px; }
+@media (min-width: 700px) { html { font-size: 20px; } }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 1rem/1.5 var(--body);
+  padding-inline: 16px; padding-block: 20px 48px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+#games { display: flex; flex-direction: column; gap: 32px; }
+
+header { display: flex; flex-direction: column; gap: 8px; }
+h1 {
+  font: 800 clamp(2.6rem, 11vw, 3.8rem)/0.92 var(--display);
+  text-transform: uppercase; letter-spacing: 0.01em; margin: 0; text-wrap: balance;
+}
+h1 span { color: var(--turf); }
+.lede { margin: 0; color: var(--muted); max-width: 40ch; font-size: 1rem; }
+
+/* Controls: full-width rows on a phone, one row on a wide screen. */
+.controls { display: grid; gap: 10px; }
+@media (min-width: 820px) { .controls { grid-template-columns: 1fr auto; align-items: center; } }
+.weeknav { display: grid; grid-template-columns: 56px 1fr 56px; gap: 8px; min-width: 0; }
+button, select {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 2px solid var(--line); border-radius: 12px; padding: 10px 14px; min-height: 56px;
+  -webkit-tap-highlight-color: transparent;
+}
+button { cursor: pointer; font-weight: 700; touch-action: manipulation; }
+button:hover:not(:disabled), select:hover { border-color: var(--turf); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.35; cursor: default; }
+:focus-visible { outline: 3px solid var(--turf); outline-offset: 2px; }
+.arrow { padding: 0; font-size: 1.4rem; line-height: 1; }
+select { min-width: 0; font-weight: 700; text-overflow: ellipsis; }
+.toggles { display: grid; gap: 8px; }
+.toggle {
+  display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer;
+  background: var(--surface); border: 2px solid var(--line); border-radius: 12px;
+  padding: 8px 10px; min-height: 56px; user-select: none; font-weight: 700; text-align: center; white-space: nowrap;
+}
+.toggle:has(input:checked) { border-color: var(--turf); }
+.toggle input { width: 22px; height: 22px; accent-color: var(--turf); margin: 0; flex: none; }
+
+.status { color: var(--muted); }
+.status.err { color: var(--notd); font-weight: 700; }
+.restore { min-height: 56px; width: 100%; color: var(--muted); border-style: dashed; }
+
+section { display: flex; flex-direction: column; gap: 14px; }
+h2 {
+  font: 700 1.35rem/1.2 var(--body); margin: 0;
+  padding-bottom: 8px; border-bottom: 3px solid var(--ink);
+}
+h2.lions { color: var(--lions); border-color: var(--lions); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 16px; }
+
+/* Game card */
+.game {
+  background: var(--surface); border: 2px solid var(--line); border-radius: var(--radius);
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+}
+.game.mine { border-color: var(--lions); border-width: 3px; }
+.meta {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 18px 0;
+  color: var(--muted); font-weight: 700;
+}
+.tags { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.upset {
+  font: 800 1rem/1 var(--display); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 5px 9px 4px; border-radius: 6px; transform: skewX(-8deg);
+  background: var(--upset-bg); color: var(--upset); border: 2px solid var(--upset);
+}
+.upset.huge { background: var(--upset); color: var(--surface); }
+.channel {
+  color: var(--ink); background: var(--chip);
+  padding: 3px 12px; border-radius: 8px; letter-spacing: 0.02em;
+}
+.teams { padding: 12px 18px 16px; display: flex; flex-direction: column; gap: 2px; }
+.team { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.rank { font-weight: 700; color: var(--turf); margin-right: 6px; white-space: nowrap; }
+.name { flex: 1; font-weight: 700; font-size: 1.25rem; line-height: 1.25; min-width: 0; overflow-wrap: break-word; }
+.rec { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.at { color: var(--muted); font-size: 0.95rem; }
+
+/* Facts read as label / value rows. */
+.facts {
+  margin: 0; border-top: 2px dashed var(--line); padding: 14px 18px 16px;
+  display: grid; grid-template-columns: 3.8rem 1fr; gap: 14px 10px; align-items: center;
+}
+.facts dt { color: var(--muted); line-height: 1.25; }
+.facts dd { margin: 0; min-width: 0; }
+.total { font-weight: 700; font-size: 2rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.total small { font-size: 1rem; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.qs { display: flex; gap: 5px; }
+/* Quarter with a TD: green outline. Without: grey dashed outline, crossed out. */
+.q {
+  font-weight: 700; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--turf);
+  background: transparent; color: var(--turf); font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.q.no {
+  background: transparent; color: var(--muted); border: 2px dashed var(--line);
+  text-decoration: line-through; text-decoration-thickness: 2px;
+}
+.qnote { margin-top: 6px; color: var(--muted); font-size: 0.95rem; }
+.win {
+  display: inline-block; vertical-align: 0.12em; margin-left: 8px;
+  font: 800 0.95rem/1 var(--display); letter-spacing: 0.04em;
+  padding: 4px 7px 3px; border-radius: 6px; transform: skewX(-8deg);
+  background: var(--turf); color: var(--turf-ink);
+}
+.waiting { border-top: 2px dashed var(--line); padding: 14px 18px 16px; color: var(--muted); }
+
+.actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 0 18px 18px; margin-top: auto; }
+.watch[aria-pressed="true"] { background: var(--turf); border-color: var(--turf); color: var(--turf-ink); }
+.remove { color: var(--muted); }
+.game.seen { border-style: dashed; }
+.game.seen > :not(.actions) { opacity: 0.6; }
+
+.empty { color: var(--muted); background: var(--surface); border: 2px dashed var(--line); border-radius: var(--radius); padding: 20px; }
+footer { color: var(--muted); font-size: 0.9rem; max-width: 60ch; }
+@media (prefers-reduced-motion: no-preference) {
+  .game { animation: rise 0.2s ease-out both; }
+  @keyframes rise { from { transform: translateY(4px); } to { transform: none; } }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Dee&rsquo;s <span>Watchlist</span></h1>
+    <p class="lede">College football and Lions games on DIRECTV, with hints about which ones were exciting. No final scores.</p>
+  </header>
+
+  <div class="controls">
+    <div class="weeknav">
+      <button id="prev" class="arrow" type="button" aria-label="Previous week">&larr;</button>
+      <select id="week" aria-label="Choose a week"></select>
+      <button id="next" class="arrow" type="button" aria-label="Next week">&rarr;</button>
+    </div>
+    <div class="toggles">
+      <label class="toggle"><input type="checkbox" id="ranked"> Top 25 only</label>
+    </div>
+  </div>
+
+
+  <div id="status" class="status" role="status">Loading games…</div>
+  <main id="games"></main>
+  <button id="restore" class="restore" type="button" hidden></button>
+
+  <footer>
+    Scores come from ESPN. "Points" is both teams' points added together, rounded down to the nearest 10. Quarters without a touchdown count only the four regular quarters.
+    Games streaming only on ESPN+, Peacock, Prime Video, Netflix and similar apps are left out.
+  </footer>
+</div>
+
+<script>
+const API = "https://site.api.espn.com/apis/site/v2/sports/football";
+
+// Channel names as ESPN lists them, for channels carried on DIRECTV.
+// Streaming-only services (ESPN+, SECN+, ACCNX, Peacock, Prime Video, Netflix, Disney+ ...) are not here.
+const DIRECTV = new Set([
+  "ABC", "CBS", "NBC", "FOX", "CW", "THE CW",
+  "ESPN", "ESPN2", "ESPNU", "ESPNEWS",
+  "SEC NETWORK", "SECN", "ACC NETWORK", "ACCN", "BTN", "BIG TEN NETWORK",
+  "CBSSN", "CBS SPORTS NETWORK", "FS1", "FS2",
+  "NFL NETWORK", "NFL NET", "NFLN",
+  "USA NET", "USA NETWORK", "USA", "TNT", "TBS", "TRUTV",
+  "PAC-12 NETWORK", "PAC-12 NET", "PAC12", "LONGHORN NETWORK", "LHN",
+]);
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+
+let weeks = [];      // [{label, seasontype, week, start, end, year}]
+let weekIdx = -1;
+let loadToken = 0;
+const summaryCache = new Map();
+
+// What she has done with each card, kept in this browser: "w" = watched, "r" = removed.
+let marks = {};
+try { marks = JSON.parse(store.get("marks") || "{}") || {}; } catch { marks = {}; }
+const markKey = (g) => `${g.league}:${g.id}`;
+function setMark(g, value) {
+  if (value) marks[markKey(g)] = value; else delete marks[markKey(g)];
+  store.set("marks", JSON.stringify(marks));
+  render();
+}
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v; else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`ESPN answered ${r.status}`);
+  return r.json();
+}
+
+function fmtDay(d) { return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }); }
+function fmtTime(d) { return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+function fmtShort(d) { return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+
+function directvChannels(names) {
+  return names.filter((n) => DIRECTV.has(String(n).trim().toUpperCase()));
+}
+
+// ---------- normalize ESPN events into one shape ----------
+
+function fromScoreboard(ev, league) {
+  const c = ev.competitions[0];
+  const channels = (c.broadcasts || []).flatMap((b) => b.names || []);
+  return {
+    id: ev.id, league, date: new Date(ev.date), channels,
+    state: c.status.type.state, completed: c.status.type.completed,
+    statusText: c.status.type.description,
+    teams: c.competitors
+      .slice().sort((a, b) => (a.homeAway === "away" ? 0 : 1) - (b.homeAway === "away" ? 0 : 1))
+      .map((t) => ({
+        id: t.team.id,
+        name: t.team.displayName || t.team.location,
+        short: t.team.shortDisplayName || t.team.displayName,
+        rank: t.curatedRank && t.curatedRank.current <= 25 ? t.curatedRank.current : null,
+        record: (t.records || []).find((r) => r.type === "total")?.summary || (t.records || [])[0]?.summary || "",
+        score: Number(t.score) || 0,
+        winner: t.winner === true,
+      })),
+  };
+}
+
+function fromTeamSchedule(ev) {
+  const c = ev.competitions[0];
+  const channels = (c.broadcasts || []).map((b) => b.media?.shortName).filter(Boolean);
+  return {
+    id: ev.id, league: "nfl", date: new Date(ev.date), channels,
+    state: c.status.type.state, completed: c.status.type.completed,
+    statusText: c.status.type.description,
+    teams: c.competitors
+      .slice().sort((a, b) => (a.homeAway === "away" ? 0 : 1) - (b.homeAway === "away" ? 0 : 1))
+      .map((t) => ({
+        id: t.team.id,
+        name: t.team.displayName,
+        short: t.team.shortDisplayName || t.team.displayName,
+        rank: null,
+        record: (t.record || []).find((r) => r.type === "total")?.displayValue || "",
+        score: t.score ? Number(t.score.value) || 0 : 0,
+        winner: t.winner === true,
+      })),
+  };
+}
+
+// ---------- data loading ----------
+
+async function loadCalendar() {
+  const d = await getJSON(`${API}/college-football/scoreboard?groups=80`);
+  const year = d.season?.year;
+  for (const part of d.leagues?.[0]?.calendar || []) {
+    if (part.value !== "2" && part.value !== "3") continue;
+    for (const e of part.entries) {
+      if (e.value === "999") continue; // the CFP is already inside "Bowls"
+      weeks.push({
+        label: part.value === "3" ? "Bowls & Playoff" : e.label, detail: e.detail,
+        seasontype: part.value, week: e.value, year,
+        start: new Date(e.startDate), end: new Date(e.endDate),
+      });
+    }
+  }
+  const now = new Date();
+  weekIdx = weeks.findIndex((w) => now >= w.start && now < w.end);
+  if (weekIdx < 0) weekIdx = now < weeks[0].start ? 0 : weeks.length - 1;
+}
+
+async function loadWeek(w) {
+  const [cfb, lions] = await Promise.all([
+    getJSON(`${API}/college-football/scoreboard?groups=80&seasontype=${w.seasontype}&week=${w.week}&limit=400`),
+    loadLions(w),
+  ]);
+  const college = (cfb.events || []).map((e) => fromScoreboard(e, "college-football"));
+  const games = [...lions, ...college].filter((g) => directvChannels(g.channels).length > 0);
+  // Touchdown and upset info come from each finished game's summary; sorting needs them first.
+  await Promise.all(games.filter((g) => g.completed).map((g) =>
+    gameDetails(g).then((d) => { g.details = d; }, () => { g.details = null; })));
+  return games;
+}
+
+const lionsSeasonCache = new Map();
+async function loadLions(w) {
+  if (!lionsSeasonCache.has(w.year)) {
+    lionsSeasonCache.set(w.year, Promise.all(["2", "3"].map((st) =>
+      getJSON(`${API}/nfl/teams/det/schedule?season=${w.year}&seasontype=${st}`)
+        .then((d) => d.events || []).catch(() => [])
+    )).then((parts) => parts.flat().map(fromTeamSchedule)));
+  }
+  const all = await lionsSeasonCache.get(w.year);
+  return all.filter((g) => g.date >= w.start && g.date < w.end);
+}
+
+// Upsets, judged two ways and the bigger one wins:
+//  - betting line: the winner was a 14+ point underdog is "huge", 7+ is an "upset";
+//  - rankings: unranked over a top-10 team is "huge"; unranked over 11-25, or a
+//    ranked team beating one ranked 10+ spots higher, is an "upset".
+const HUGE_UPSET_SPREAD = 14;
+const UPSET_SPREAD = 7;
+const UPSET_BOOST = { huge: 20, upset: 10 }; // extra points when sorting
+
+function upsetLevel(g, pickcenter) {
+  const winner = g.teams.find((t) => t.winner);
+  const loser = g.teams.find((t) => !t.winner);
+  if (!winner || !loser) return null;
+
+  let bySpread = null;
+  const line = (pickcenter || []).find((o) => typeof o.spread === "number" && (o.homeTeamOdds || o.awayTeamOdds));
+  const fav = line && [line.homeTeamOdds, line.awayTeamOdds].find((o) => o?.favorite);
+  if (fav && String(fav.teamId) !== String(winner.id)) {
+    const by = Math.abs(line.spread);
+    bySpread = by >= HUGE_UPSET_SPREAD ? "huge" : by >= UPSET_SPREAD ? "upset" : null;
+  }
+
+  let byRank = null;
+  if (loser.rank && !winner.rank) byRank = loser.rank <= 10 ? "huge" : "upset";
+  else if (loser.rank && winner.rank - loser.rank >= 10) byRank = "upset";
+
+  return bySpread === "huge" || byRank === "huge" ? "huge" : bySpread || byRank;
+}
+
+// From a finished game's summary: quarters 1-4 with no touchdown by either team
+// (overtime ignored), and whether the result was an upset.
+async function gameDetails(g) {
+  const key = g.league + g.id;
+  if (!summaryCache.has(key)) {
+    summaryCache.set(key, getJSON(`${API}/${g.league}/summary?event=${g.id}`).then((d) => {
+      const tdQuarters = new Set();
+      for (const p of d.scoringPlays || []) {
+        const isTD = p.scoringType?.name === "touchdown" || /touchdown/i.test(p.type?.text || "");
+        if (isTD) tdQuarters.add(p.period?.number);
+      }
+      return {
+        missing: [1, 2, 3, 4].filter((q) => !tdQuarters.has(q)),
+        upset: upsetLevel(g, d.pickcenter),
+      };
+    }));
+  }
+  return summaryCache.get(key);
+}
+
+// ---------- rendering ----------
+
+function teamRow(t, showWin) {
+  return h("div", { class: "team" },
+    h("span", { class: "name" }, t.rank ? h("span", { class: "rank" }, `#${t.rank}`) : null, t.name,
+      showWin && t.winner ? h("span", { class: "win", title: "Winner", "aria-label": "Winner" }, "W") : null),
+    h("span", { class: "rec" }, t.record),
+  );
+}
+
+function card(g) {
+  const ch = directvChannels(g.channels).join(" / ");
+  const [away, home] = g.teams;
+  const showWin = g.completed;
+  const seen = marks[markKey(g)] === "w";
+  const el = h("article", { class: "game" + (isMine(g) ? " mine" : "") + (seen ? " seen" : "") },
+    h("div", { class: "meta" },
+      h("span", { class: "tags" },
+        h("span", { class: "channel" }, ch),
+        g.details?.upset === "huge" ? h("span", { class: "upset huge" }, "Huge upset")
+          : g.details?.upset === "upset" ? h("span", { class: "upset" }, "Upset") : null),
+      h("span", null, g.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })),
+    ),
+    h("div", { class: "teams" }, teamRow(away, showWin), h("div", { class: "at" }, "at"), teamRow(home, showWin)),
+  );
+
+  if (g.completed) {
+    const total = g.teams.reduce((s, t) => s + t.score, 0);
+    const rounded = Math.floor(total / 10) * 10;
+    const qBox = h("dd", null);
+    const missing = g.details?.missing;
+    if (missing) {
+      qBox.append(h("div", { class: "qs" }, [1, 2, 3, 4].map((q) => {
+        const none = missing.includes(q);
+        return h("span", { class: "q" + (none ? " no" : ""), title: none ? "No touchdown" : "At least one touchdown",
+          "aria-label": `Quarter ${q}: ${none ? "no touchdown" : "touchdown"}` }, `Q${q}`);
+      })));
+    } else {
+      qBox.append(h("div", { class: "qnote" }, "Not available"));
+    }
+    el.append(h("dl", { class: "facts" },
+      h("dt", null, "Points"),
+      h("dd", null, h("span", { class: "total" }, `${rounded}+`)),
+      h("dt", null, "TDs"),
+      qBox,
+    ));
+  } else if (g.state === "in") {
+    el.append(h("div", { class: "waiting" }, "Playing now. Hints appear after the final whistle."));
+  } else if (g.state === "pre") {
+    el.append(h("div", { class: "waiting" }, `Kicks off ${fmtDay(g.date)} at ${fmtTime(g.date)}.`));
+  } else {
+    el.append(h("div", { class: "waiting" }, g.statusText || "No result"));
+  }
+
+  const teamsText = `${away.short} at ${home.short}`;
+  const watchBtn = h("button", { type: "button", class: "watch", "aria-pressed": seen ? "true" : "false",
+    "aria-label": `${seen ? "Unmark" : "Mark"} ${teamsText} as watched` }, seen ? "\u2713 Watched" : "Mark watched");
+  watchBtn.addEventListener("click", () => setMark(g, seen ? null : "w"));
+  const removeBtn = h("button", { type: "button", class: "remove", "aria-label": `Remove ${teamsText}` }, "Remove");
+  removeBtn.addEventListener("click", () => setMark(g, "r"));
+  el.append(h("div", { class: "actions" }, watchBtn, removeBtn));
+  return el;
+}
+
+let lastGames = [];
+
+// ---------- her teams ----------
+// ESPN team ids: BYU, Michigan, Oregon. The Lions are always hers too.
+const HER_TEAMS = new Set(["252", "130", "2483"]);
+const isPinned = (t) => HER_TEAMS.has(String(t.id));
+const isMine = (g) => g.league === "nfl" || g.teams.some(isPinned);
+
+// Finished games first, most points to fewest (by the rounded number, so the order
+// gives nothing extra away, plus the upset boost), then games in progress, then upcoming by kickoff.
+function byPoints(a, b) {
+  const rank = (g) => (g.completed ? 0 : g.state === "in" ? 1 : 2);
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (a.completed) {
+    const pts = (g) => Math.floor(g.teams.reduce((s, t) => s + t.score, 0) / 10) * 10
+      + (UPSET_BOOST[g.details?.upset] || 0);
+    if (pts(a) !== pts(b)) return pts(b) - pts(a);
+  }
+  return a.date - b.date;
+}
+function render() {
+  const main = $("games");
+  main.replaceChildren();
+  const rankedOnly = $("ranked").checked;
+  const removed = lastGames.filter((g) => marks[markKey(g)] === "r");
+  const games = lastGames.filter((g) => marks[markKey(g)] !== "r").sort(byPoints);
+
+  const mine = games.filter(isMine);
+  if (mine.length) {
+    main.append(h("section", null, h("h2", { class: "lions" }, "My teams"), h("div", { class: "grid" }, mine.map(card))));
+  }
+  const rest = games.filter((g) => !isMine(g) && (!rankedOnly || g.teams.some((t) => t.rank)));
+  if (rest.length) {
+    main.append(h("section", null, h("h2", null, rankedOnly ? "Top 25 games" : "All other games"), h("div", { class: "grid" }, rest.map(card))));
+  }
+  if (!mine.length && !rest.length) {
+    main.append(h("div", { class: "empty" }, rankedOnly
+      ? "No Top 25 games on DIRECTV this week. Turn off \u201cTop 25 only\u201d to see the rest."
+      : "No games on DIRECTV this week."));
+  }
+  const done = games.filter((g) => g.completed).length;
+  $("status").className = "status";
+  const watched = games.filter((g) => marks[markKey(g)] === "w").length;
+  $("status").textContent = `${games.length} games on DIRECTV · ${done} finished · ${watched} watched`;
+  $("restore").hidden = removed.length === 0;
+  $("restore").textContent = `Bring back ${removed.length} removed game${removed.length === 1 ? "" : "s"}`;
+}
+
+async function showWeek(i, { autoBack = false } = {}) {
+  weekIdx = i;
+  $("week").value = String(i);
+  $("prev").disabled = i <= 0;
+  $("next").disabled = i >= weeks.length - 1;
+  const token = ++loadToken;
+  $("status").className = "status";
+  $("status").textContent = "Loading games…";
+  $("restore").hidden = true;
+  try {
+    const games = await loadWeek(weeks[i]);
+    if (token !== loadToken) return;
+    // Early in a week nothing has finished yet, so open on last week instead.
+    if (autoBack && i > 0 && !games.some((g) => g.completed)) return showWeek(i - 1);
+    lastGames = games;
+    render();
+  } catch (e) {
+    if (token !== loadToken) return;
+    $("games").replaceChildren();
+    $("status").className = "status err";
+    $("status").textContent = "Couldn't reach ESPN. Check the internet connection, then reload the page.";
+  }
+}
+
+async function start() {
+  for (const id of ["ranked"]) {
+    $(id).checked = store.get(id) === "1";
+    $(id).addEventListener("change", () => { store.set(id, $(id).checked ? "1" : "0"); render(); });
+  }
+  try {
+    await loadCalendar();
+  } catch {
+    $("status").className = "status err";
+    $("status").textContent = "Couldn't reach ESPN. Check the internet connection, then reload the page.";
+    return;
+  }
+  $("week").replaceChildren(...weeks.map((w, i) => h("option", { value: String(i) },
+    w.detail ? `${w.detail} · ${w.label}` : w.label)));
+  $("restore").addEventListener("click", () => {
+    for (const g of lastGames) if (marks[markKey(g)] === "r") delete marks[markKey(g)];
+    store.set("marks", JSON.stringify(marks));
+    render();
+  });
+  $("week").addEventListener("change", () => showWeek(Number($("week").value)));
+  $("prev").addEventListener("click", () => showWeek(weekIdx - 1));
+  $("next").addEventListener("click", () => showWeek(weekIdx + 1));
+  showWeek(weekIdx, { autoBack: true });
+}
+start();
+</script>
+</body>
+</html>
