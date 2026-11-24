@@ -192,9 +192,9 @@ footer { color: var(--muted); font-size: 0.9rem; max-width: 60ch; }
 
   <div class="controls">
     <div class="weeknav">
-      <button id="prev" class="arrow" type="button" aria-label="Previous week">&larr;</button>
-      <select id="week" aria-label="Choose a week"></select>
-      <button id="next" class="arrow" type="button" aria-label="Next week">&rarr;</button>
+      <button id="prev" class="arrow" type="button" aria-label="Previous week" disabled>&larr;</button>
+      <select id="week" aria-label="Choose a week" disabled></select>
+      <button id="next" class="arrow" type="button" aria-label="Next week" disabled>&rarr;</button>
     </div>
     <div class="toggles">
       <label class="toggle"><input type="checkbox" id="ranked"> Top 25 only</label>
@@ -261,10 +261,26 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 
-async function getJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`ESPN answered ${r.status}`);
-  return r.json();
+async function getJSON(url, tries = 2) {
+  for (let i = 1; ; i++) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`ESPN answered ${r.status}`);
+      return await r.json();
+    } catch (err) {
+      if (i >= tries) throw err;
+      await new Promise((res) => setTimeout(res, 600 * i));
+    }
+  }
+}
+
+// A busy week has 60+ finished games; ask ESPN for a few summaries at a time.
+let summarySlots = 6;
+const summaryQueue = [];
+async function limited(fn) {
+  if (summarySlots === 0) await new Promise((res) => summaryQueue.push(res));
+  summarySlots--;
+  try { return await fn(); } finally { summarySlots++; summaryQueue.shift()?.(); }
 }
 
 function fmtDay(d) { return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }); }
@@ -283,7 +299,8 @@ function fromScoreboard(ev, league) {
   return {
     id: ev.id, league, date: new Date(ev.date), channels,
     state: c.status.type.state, completed: c.status.type.completed,
-    statusText: c.status.type.description,
+    statusText: c.status.type.description, statusName: c.status.type.name,
+    neutral: c.neutralSite === true,
     event: eventName(c.notes?.[0]?.headline),
     teams: c.competitors
       .slice().sort((a, b) => (a.homeAway === "away" ? 0 : 1) - (b.homeAway === "away" ? 0 : 1))
@@ -316,7 +333,8 @@ function fromTeamSchedule(ev) {
   return {
     id: ev.id, league: "nfl", date: new Date(ev.date), channels,
     state: c.status.type.state, completed: c.status.type.completed,
-    statusText: c.status.type.description,
+    statusText: c.status.type.description, statusName: c.status.type.name,
+    neutral: c.neutralSite === true, event: eventName(c.notes?.[0]?.headline),
     teams: c.competitors
       .slice().sort((a, b) => (a.homeAway === "away" ? 0 : 1) - (b.homeAway === "away" ? 0 : 1))
       .map((t) => ({
@@ -336,11 +354,17 @@ function fromTeamSchedule(ev) {
 async function loadCalendar() {
   const d = await getJSON(`${API}/college-football/scoreboard?groups=80`);
   const year = d.season?.year;
+  // Lions playoff games can run past the bowl season (the Super Bowl is in February).
+  const [post, lions] = await Promise.all([
+    loadPostseason(year).catch(() => null),
+    lionsSeason(year).catch(() => null),
+  ]);
+  const lastLions = Math.max(0, ...(lions || []).map((g) => +g.date + DAY));
   for (const part of d.leagues?.[0]?.calendar || []) {
     if (part.value !== "2" && part.value !== "3") continue;
-    for (const e of part.entries) {
+    for (const e of part.entries || []) {
       if (e.value === "999") continue; // the CFP is already inside "Bowls"
-      if (part.value === "3") { weeks.push(...bowlWeeks(e, year)); continue; }
+      if (part.value === "3") { weeks.push(...bowlWeeks(e, year, lastLions)); continue; }
       weeks.push({
         label: e.label, detail: e.detail,
         seasontype: part.value, week: e.value, year,
@@ -348,15 +372,18 @@ async function loadCalendar() {
       });
     }
   }
-  // Leave out bowl weeks with no games (the gaps between bowls and playoff rounds).
-  try {
-    const post = await loadPostseason(year);
-    const used = new Set(post.map((e) => bowlWeekOf(new Date(e.date))));
-    weeks = weeks.filter((w) => w.seasontype !== "3" || used.has(w));
-  } catch { /* keep every week; each one loads on its own */ }
+  // Leave out postseason weeks with no games (the gaps between bowls and playoff
+  // rounds). A week with only a Lions game is labeled for the Lions.
+  if (post && lions) {
+    const college = new Set(post.map((e) => bowlWeekOf(new Date(e.date))));
+    const nfl = new Set(lions.map((g) => weeks.find((w) => w.seasontype === "3" && g.date >= w.start && g.date < w.end)));
+    weeks = weeks.filter((w) => w.seasontype !== "3" || college.has(w) || nfl.has(w));
+    for (const w of weeks) if (w.seasontype === "3" && !college.has(w)) w.label = "Lions";
+  }
   const now = new Date();
   // The week we're in, or the latest one already started (between bowl weeks, say).
-  weekIdx = Math.max(0, weeks.findLastIndex((w) => w.start <= now));
+  weekIdx = 0;
+  weeks.forEach((w, i) => { if (w.start <= now) weekIdx = i; });
 }
 
 // ESPN lists the whole postseason as one "week" running into late January. Split it
@@ -366,9 +393,9 @@ function rangeLabel(from, until) {
   const a = fmtShort(from), z = fmtShort(new Date(until - 1));
   return a.split(" ")[0] === z.split(" ")[0] ? `${a}-${z.split(" ")[1]}` : `${a}-${z}`;
 }
-function bowlWeeks(e, year) {
+function bowlWeeks(e, year, notBefore = 0) {
   let start = new Date(e.startDate);
-  const end = new Date(e.endDate);
+  const end = new Date(Math.max(+new Date(e.endDate), notBefore));
   const cuts = [];
   const to = new Date(start);
   to.setUTCHours(7, 0, 0, 0); // regular-season weeks also turn over Monday 07:00 UTC
@@ -399,6 +426,7 @@ function bowlWeekOf(date) {
   return bowls.find((w) => date < w.end) || bowls[bowls.length - 1];
 }
 
+
 const postseasonCache = new Map();
 function loadPostseason(year) {
   if (!postseasonCache.has(year)) {
@@ -418,24 +446,39 @@ async function loadCollege(w) {
 }
 
 async function loadWeek(w) {
-  const [events, lions] = await Promise.all([loadCollege(w), loadLions(w)]);
+  // If only the Lions schedule fails, show the college games and say so.
+  let lionsFailed = false;
+  const [events, lions] = await Promise.all([
+    loadCollege(w),
+    loadLions(w).catch(() => { lionsFailed = true; return []; }),
+  ]);
   const college = events.map((e) => fromScoreboard(e, "college-football"));
-  const games = [...lions, ...college].filter((g) => directvChannels(g.channels).length > 0);
+  // Keep games on a DIRECTV channel, plus upcoming games whose channel isn't announced
+  // yet (bowl games, flexed NFL games) so they don't vanish until it is.
+  const games = [...lions, ...college].filter((g) =>
+    directvChannels(g.channels).length > 0 || (g.state === "pre" && g.channels.length === 0));
   // Touchdown and upset info come from each finished game's summary; sorting needs them first.
   await Promise.all(games.filter((g) => g.completed).map((g) =>
     gameDetails(g).then((d) => { g.details = d; }, () => { g.details = null; })));
+  games.lionsFailed = lionsFailed;
   return games;
 }
 
 const lionsSeasonCache = new Map();
-async function loadLions(w) {
-  if (!lionsSeasonCache.has(w.year)) {
-    lionsSeasonCache.set(w.year, Promise.all(["2", "3"].map((st) =>
-      getJSON(`${API}/nfl/teams/det/schedule?season=${w.year}&seasontype=${st}`)
-        .then((d) => d.events || []).catch(() => [])
-    )).then((parts) => parts.flat().map(fromTeamSchedule)));
+function lionsSeason(year) {
+  if (!lionsSeasonCache.has(year)) {
+    // Regular season and playoffs. ESPN answers the playoff request with nothing
+    // (or an error) until the Lions are in, so only the regular season must succeed.
+    lionsSeasonCache.set(year, Promise.all([
+      getJSON(`${API}/nfl/teams/det/schedule?season=${year}&seasontype=2`),
+      getJSON(`${API}/nfl/teams/det/schedule?season=${year}&seasontype=3`, 1).catch(() => ({})),
+    ]).then((parts) => parts.flatMap((d) => d.events || []).map(fromTeamSchedule),
+      (err) => { lionsSeasonCache.delete(year); throw err; }));
   }
-  const all = await lionsSeasonCache.get(w.year);
+  return lionsSeasonCache.get(year);
+}
+async function loadLions(w) {
+  const all = await lionsSeason(w.year);
   return all.filter((g) => g.date >= w.start && g.date < w.end);
 }
 
@@ -454,8 +497,10 @@ function upsetLevel(g, pickcenter) {
 
   let bySpread = null;
   const line = (pickcenter || []).find((o) => typeof o.spread === "number" && (o.homeTeamOdds || o.awayTeamOdds));
-  const fav = line && [line.homeTeamOdds, line.awayTeamOdds].find((o) => o?.favorite);
-  if (fav && String(fav.teamId) !== String(winner.id)) {
+  let fav = line && [line.homeTeamOdds, line.awayTeamOdds].find((o) => o?.favorite);
+  // ESPN's spread is from the home team's side: negative means the home team was favored.
+  if (line && !fav && line.spread !== 0) fav = line.spread < 0 ? line.homeTeamOdds : line.awayTeamOdds;
+  if (fav?.teamId != null && String(fav.teamId) !== String(winner.id)) {
     const by = Math.abs(line.spread);
     bySpread = by >= HUGE_UPSET_SPREAD ? "huge" : by >= UPSET_SPREAD ? "upset" : null;
   }
@@ -472,17 +517,26 @@ function upsetLevel(g, pickcenter) {
 async function gameDetails(g) {
   const key = g.league + g.id;
   if (!summaryCache.has(key)) {
-    summaryCache.set(key, getJSON(`${API}/${g.league}/summary?event=${g.id}`).then((d) => {
+    summaryCache.set(key, limited(() => getJSON(`${API}/${g.league}/summary?event=${g.id}`)).then((d) => {
+      const plays = d.scoringPlays || [];
       const tdQuarters = new Set();
-      for (const p of d.scoringPlays || []) {
+      for (const p of plays) {
         const isTD = p.scoringType?.name === "touchdown" || /touchdown/i.test(p.type?.text || "");
         if (isTD) tdQuarters.add(p.period?.number);
       }
+      // Only trust the play list if it nearly adds up to the final score. Small-school
+      // games sometimes have no plays or only some, and an empty list would wrongly
+      // say "no touchdowns at all". ESPN sometimes drops an extra point or a field
+      // goal; a gap under 6 can't be hiding a touchdown, so that's still fine.
+      const total = g.teams.reduce((s, t) => s + t.score, 0);
+      const last = plays[plays.length - 1];
+      const listed = last ? (Number(last.awayScore) || 0) + (Number(last.homeScore) || 0) : 0;
+      const complete = total - listed >= 0 && total - listed < 6;
       return {
-        missing: [1, 2, 3, 4].filter((q) => !tdQuarters.has(q)),
+        missing: complete ? [1, 2, 3, 4].filter((q) => !tdQuarters.has(q)) : null,
         upset: upsetLevel(g, d.pickcenter),
       };
-    }));
+    }, (err) => { summaryCache.delete(key); throw err; }));
   }
   return summaryCache.get(key);
 }
@@ -498,7 +552,7 @@ function teamRow(t, showWin) {
 }
 
 function card(g) {
-  const ch = directvChannels(g.channels).join(" / ");
+  const ch = directvChannels(g.channels).join(" / ") || "Channel TBA";
   const [away, home] = g.teams;
   const showWin = g.completed;
   const seen = marks[markKey(g)] === "w";
@@ -511,7 +565,7 @@ function card(g) {
       h("span", null, g.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })),
     ),
     g.event ? h("div", { class: "event" }, g.event) : null,
-    h("div", { class: "teams" }, teamRow(away, showWin), h("div", { class: "at" }, "at"), teamRow(home, showWin)),
+    h("div", { class: "teams" }, teamRow(away, showWin), h("div", { class: "at" }, g.neutral ? "vs" : "at"), teamRow(home, showWin)),
   );
 
   if (g.completed) {
@@ -530,12 +584,14 @@ function card(g) {
     }
     el.append(h("dl", { class: "facts" },
       h("dt", null, "Points"),
-      h("dd", null, h("span", { class: "total" }, `${rounded}+`)),
+      h("dd", null, h("span", { class: "total" }, rounded ? `${rounded}+` : "Under 10")),
       h("dt", null, "TDs"),
       qBox,
     ));
   } else if (g.state === "in") {
     el.append(h("div", { class: "waiting" }, "Playing now. Hints appear after the final whistle."));
+  } else if (g.state === "pre" && /POSTPONED|CANCELED|SUSPENDED|DELAYED/.test(g.statusName || "")) {
+    el.append(h("div", { class: "waiting" }, g.statusText));
   } else if (g.state === "pre") {
     el.append(h("div", { class: "waiting" }, `Kicks off ${fmtDay(g.date)} at ${fmtTime(g.date)}.`));
   } else {
@@ -595,59 +651,102 @@ function render() {
   const done = games.filter((g) => g.completed).length;
   $("status").className = "status";
   const watched = games.filter((g) => marks[markKey(g)] === "w").length;
-  $("status").textContent = `${games.length} games on DIRECTV · ${done} finished · ${watched} watched`;
+  $("status").textContent = `${games.length} game${games.length === 1 ? "" : "s"} on DIRECTV · ${done} finished · ${watched} watched`
+    + (lastGames.lionsFailed ? " · The Lions schedule didn't load, so reload to try again." : "");
   $("restore").hidden = removed.length === 0;
   $("restore").textContent = `Bring back ${removed.length} removed game${removed.length === 1 ? "" : "s"}`;
 }
 
-async function showWeek(i, { autoBack = false } = {}) {
+const OFFLINE = "Couldn't reach ESPN. Check the internet connection, then reload the page.";
+let loadedAt = 0;
+
+// quiet: a background refresh. It keeps the cards on screen, and if ESPN can't be
+// reached it leaves them there with a note instead of an empty page.
+async function showWeek(i, { autoBack = false, quiet = false } = {}) {
   weekIdx = i;
   $("week").value = String(i);
   $("prev").disabled = i <= 0;
   $("next").disabled = i >= weeks.length - 1;
   const token = ++loadToken;
-  $("status").className = "status";
-  $("status").textContent = "Loading games…";
-  $("restore").hidden = true;
+  if (!quiet) {
+    $("status").className = "status";
+    $("status").textContent = "Loading games…";
+    $("restore").hidden = true;
+  }
   try {
     const games = await loadWeek(weeks[i]);
     if (token !== loadToken) return;
     // Early in a week nothing has finished yet, so open on last week instead.
     if (autoBack && i > 0 && !games.some((g) => g.completed)) return showWeek(i - 1);
     lastGames = games;
+    loadedAt = Date.now();
     render();
   } catch (e) {
     if (token !== loadToken) return;
-    $("games").replaceChildren();
     $("status").className = "status err";
-    $("status").textContent = "Couldn't reach ESPN. Check the internet connection, then reload the page.";
+    if (quiet && lastGames.length) {
+      $("status").textContent = "Couldn't refresh from ESPN, so these results may be out of date.";
+      return;
+    }
+    lastGames = [];
+    $("games").replaceChildren();
+    $("restore").hidden = true;
+    $("status").textContent = OFFLINE;
   }
 }
 
+// Coming back to the page (switching back to it, unlocking the phone) reloads the
+// week if it's been a few minutes. A home-screen app has no reload button.
+const STALE_AFTER = 5 * 60 * 1000;
+function refreshIfStale() {
+  if (document.visibilityState !== "visible") return;
+  if (!started) { start(); return; }
+  if (Date.now() - loadedAt < STALE_AFTER) return;
+  lionsSeasonCache.clear();
+  postseasonCache.clear();
+  showWeek(weekIdx, { quiet: true });
+}
+document.addEventListener("visibilitychange", refreshIfStale);
+window.addEventListener("pageshow", (e) => { if (e.persisted) refreshIfStale(); });
+
+let started = false, starting = false;
 async function start() {
-  for (const id of ["ranked"]) {
-    $(id).checked = store.get(id) === "1";
-    $(id).addEventListener("change", () => { store.set(id, $(id).checked ? "1" : "0"); render(); });
-  }
+  if (started || starting) return;
+  starting = true;
   try {
     await loadCalendar();
   } catch {
+    weeks = [];
     $("status").className = "status err";
-    $("status").textContent = "Couldn't reach ESPN. Check the internet connection, then reload the page.";
+    $("status").textContent = OFFLINE;
+    return;
+  } finally {
+    starting = false;
+  }
+  if (!weeks.length) {
+    $("status").className = "status";
+    $("status").textContent = "ESPN hasn't posted a college football schedule yet. Check back closer to the season.";
     return;
   }
+  started = true;
+  $("week").disabled = false;
   $("week").replaceChildren(...weeks.map((w, i) => h("option", { value: String(i) },
     w.detail ? `${w.detail} · ${w.label}` : w.label)));
-  $("restore").addEventListener("click", () => {
-    for (const g of lastGames) if (marks[markKey(g)] === "r") delete marks[markKey(g)];
-    store.set("marks", JSON.stringify(marks));
-    render();
-  });
   $("week").addEventListener("change", () => showWeek(Number($("week").value)));
   $("prev").addEventListener("click", () => showWeek(weekIdx - 1));
   $("next").addEventListener("click", () => showWeek(weekIdx + 1));
   showWeek(weekIdx, { autoBack: true });
 }
+
+for (const id of ["ranked"]) {
+  $(id).checked = store.get(id) === "1";
+  $(id).addEventListener("change", () => { store.set(id, $(id).checked ? "1" : "0"); render(); });
+}
+$("restore").addEventListener("click", () => {
+  for (const g of lastGames) if (marks[markKey(g)] === "r") delete marks[markKey(g)];
+  store.set("marks", JSON.stringify(marks));
+  render();
+});
 start();
 </script>
 </body>
