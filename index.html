@@ -662,8 +662,8 @@ function card(g) {
 let lastGames = [];
 
 // ---------- her teams ----------
-// ESPN team ids: BYU, Michigan, Oregon. The Lions are always hers too.
-const HER_TEAMS = new Set(["252", "130", "2483"]);
+// ESPN team ids: BYU, Michigan, Oregon, UCLA, Arizona State. The Lions are always hers too.
+const HER_TEAMS = new Set(["252", "130", "2483", "26", "9"]);
 const isPinned = (t) => HER_TEAMS.has(String(t.id));
 const isMine = (g) => g.league === "nfl" || g.teams.some(isPinned);
 
